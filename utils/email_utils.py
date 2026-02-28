@@ -34,6 +34,8 @@ def _extract_first_name(client_name: str) -> str:
 def compose_client_email(
     client_name: str,
     defendant_name: str,
+    client_driver_num: str,
+    defendant_driver_num: str,
     date_of_accident: str,
     accident_description: str,
     openai_api_key: str,
@@ -47,44 +49,71 @@ def compose_client_email(
 
     subject = "Richards & Law – Your Case & Next Steps"
 
+    # Build explicit driver-number mapping so GPT never confuses the parties
+    driver_mapping = ""
+    if client_driver_num:
+        driver_mapping += f'- "Driver of Vehicle #{client_driver_num}" in the description refers to our client {client_name}\n'
+    if defendant_driver_num:
+        driver_mapping += f'- "Driver of Vehicle #{defendant_driver_num}" in the description refers to the opposing party {defendant_name}\n'
+
     prompt = f"""You are a paralegal at Richards & Law, a New York personal injury law firm.
-Write a warm, personal email to a new client. Here is the context:
+Write the narrative body of a warm, personal email to a new client. Here is the context:
 
 - Client name: {client_name} (address them as {first_name})
 - Defendant: {defendant_name}
 - Date of accident: {date_of_accident}
 - Accident description (from the police report): {accident_description}
-- A Retainer Agreement PDF is attached to the email
-- Booking link for their {season_label} consultation: {scheduling_link}
-
+{driver_mapping}
 Guidelines:
 - Open with "Hello {first_name},"
 - Write in a warm, empathetic, human tone — not robotic or template-sounding
-- In 1–2 sentences, describe the accident naturally using the real names instead of "Driver of Vehicle #1/2"
+- In 1–2 sentences, describe the accident naturally, using the real names ({client_name} and {defendant_name}) instead of "Driver of Vehicle #1/2"
 - Acknowledge any complexity or disputed facts if present
-- Ask them to review the attached Retainer Agreement before the consultation
-- Include the booking link as a plain hyperlink (no button — just a line like "You can book your appointment here: <url>")
-- Close warmly signed by "The Team at Richards & Law"
-- 4–5 short paragraphs max
-- Return plain text only — no HTML, no markdown, no subject line"""
+- Tell the client that their Retainer Agreement is attached and ask them to review it before the consultation — use **bold** for "Retainer Agreement"
+- End with a short sentence telling them to click the button below to book their {season_label} consultation
+- Do NOT include a booking link or button — that will be added separately
+- Do NOT include a signature — that will be added separately
+- 3–4 short paragraphs max
+- Return plain text only — no HTML tags, no markdown except **bold**, no subject line"""
 
     client = OpenAI(api_key=openai_api_key)
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.7,
-        max_tokens=600,
+        max_tokens=500,
     )
     plain_text = response.choices[0].message.content.strip()
 
-    # Convert plain-text paragraphs → HTML <p> tags
+    # Convert plain-text paragraphs → HTML <p> tags; convert **word** → <strong>word</strong>
+    import re
+    def to_html_para(text: str) -> str:
+        text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+        return f"  <p>{text}</p>"
+
     paragraphs = [p.strip() for p in plain_text.split("\n\n") if p.strip()]
-    html_paragraphs = "\n\n".join(f"  <p>{p}</p>" for p in paragraphs)
+    html_paragraphs = "\n\n".join(to_html_para(p) for p in paragraphs)
 
     body = f"""<html>
 <body style="font-family: Arial, sans-serif; line-height: 1.7; color: #2c2c2c; max-width: 640px; margin: auto; padding: 24px;">
 
 {html_paragraphs}
+
+  <p style="text-align: center; margin: 32px 0;">
+    <a href="{scheduling_link}"
+       style="background-color: #1a3c5e; color: #ffffff; padding: 14px 28px;
+              text-decoration: none; border-radius: 5px; font-weight: bold;
+              font-size: 15px; display: inline-block;">
+      📅 Book Your {season_label.title()} Consultation
+    </a>
+  </p>
+
+  <p>Warm regards,</p>
+  <p>
+    <strong>The Team at Richards &amp; Law</strong><br>
+    Andrew Richards, Esq.<br>
+    Richards &amp; Law — New York, NY
+  </p>
 
 </body>
 </html>"""

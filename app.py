@@ -354,6 +354,11 @@ elif st.session_state.step == 3:
             if missing:
                 st.error(f"Please fill in: {', '.join(missing)}")
             else:
+                import re as _re
+                def _driver_num(role: str) -> str:
+                    m = _re.search(r"\d+", str(role))
+                    return m.group() if m else ""
+
                 st.session_state.form_data = {
                     "client_name":           client_name.strip().title(),
                     "defendant_name":         defendant_name.strip().title(),
@@ -363,6 +368,8 @@ elif st.session_state.step == 3:
                     "plate_number":          plate_number.strip(),
                     "num_injured":           num_injured,
                     "accident_description":  accident_description.strip(),
+                    "client_driver_num":     _driver_num(client_party.get("role", "")),
+                    "defendant_driver_num":  _driver_num(defendant_party.get("role", "")),
                 }
                 st.session_state.step = 4
                 st.rerun()
@@ -606,6 +613,8 @@ elif st.session_state.step == 6:
     subject, body = compose_client_email(
         client_name          = form_data["client_name"],
         defendant_name       = form_data["defendant_name"],
+        client_driver_num    = form_data.get("client_driver_num", "1"),
+        defendant_driver_num = form_data.get("defendant_driver_num", "2"),
         date_of_accident     = form_data["date_of_accident"],
         accident_description = form_data["accident_description"],
         openai_api_key       = OPENAI_API_KEY,
