@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "swan_hackathon",
+      "runtimeExecutable": "conda",
+      "runtimeArgs": ["run", "-n", "swan_hackathon", "streamlit", "run", "app.py"],
+      "port": 8502
+    }
+  ]
+}
