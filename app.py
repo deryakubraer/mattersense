@@ -3,30 +3,26 @@ Richards & Law — Automated Case Intake
 Swans Applied AI Hackathon
 """
 
-import os
 import time
 import urllib.parse
 from datetime import datetime
 
 import requests
 import streamlit as st
-from dotenv import load_dotenv
 
 from utils.clio_client import ClioClient
 from utils.email_utils import compose_client_email, get_scheduling_link, send_email
 from utils.pdf_parser import extract_fields_from_pdf
 
 # ── Environment ───────────────────────────────────────────────────────────────
-load_dotenv()
-
-CLIO_CLIENT_ID     = os.getenv("CLIO_CLIENT_ID")
-CLIO_CLIENT_SECRET = os.getenv("CLIO_CLIENT_SECRET")
-CLIO_REDIRECT_URI  = os.getenv("CLIO_REDIRECT_URI", "http://localhost:8501")
+CLIO_CLIENT_ID     = st.secrets["CLIO_CLIENT_ID"]
+CLIO_CLIENT_SECRET = st.secrets["CLIO_CLIENT_SECRET"]
+CLIO_REDIRECT_URI  = st.secrets.get("CLIO_REDIRECT_URI", "http://127.0.0.1:8502")
 CLIO_AUTH_URL      = "https://eu.app.clio.com/oauth/authorize"
 CLIO_TOKEN_URL     = "https://eu.app.clio.com/oauth/token"
-OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY")
-GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS")
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+OPENAI_API_KEY     = st.secrets["OPENAI_API_KEY"]
+GMAIL_ADDRESS      = st.secrets["GMAIL_ADDRESS"]
+GMAIL_APP_PASSWORD = st.secrets["GMAIL_APP_PASSWORD"]
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
