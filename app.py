@@ -355,8 +355,8 @@ elif st.session_state.step == 3:
                 st.error(f"Please fill in: {', '.join(missing)}")
             else:
                 st.session_state.form_data = {
-                    "client_name":           client_name.strip(),
-                    "defendant_name":         defendant_name.strip(),
+                    "client_name":           client_name.strip().title(),
+                    "defendant_name":         defendant_name.strip().title(),
                     "pronoun":               pronoun,
                     "date_of_accident":      date_of_accident.strip(),
                     "accident_location":     accident_location.strip(),
@@ -604,8 +604,9 @@ elif st.session_state.step == 6:
     # Build email
     scheduling_link, season_label = get_scheduling_link()
     subject, body = compose_client_email(
-        client_name         = form_data["client_name"],
-        date_of_accident    = form_data["date_of_accident"],
+        client_name          = form_data["client_name"],
+        defendant_name       = form_data["defendant_name"],
+        date_of_accident     = form_data["date_of_accident"],
         accident_description = form_data["accident_description"],
     )
 

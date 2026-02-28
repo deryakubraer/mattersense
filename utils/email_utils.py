@@ -1,3 +1,4 @@
+import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -20,6 +21,7 @@ def get_scheduling_link() -> tuple[str, str]:
 
 def compose_client_email(
     client_name: str,
+    defendant_name: str,
     date_of_accident: str,
     accident_description: str,
 ) -> tuple[str, str]:
@@ -28,7 +30,18 @@ def compose_client_email(
     Returns (subject, html_body).
     """
     scheduling_link, season_label = get_scheduling_link()
-    first_name = client_name.split()[0] if client_name else "there"
+
+    # Police reports use "Last, First" format — extract the first name correctly
+    if "," in client_name:
+        after_comma = client_name.split(",", 1)[1].strip()
+        first_name = after_comma.split()[0] if after_comma else client_name.split(",")[0].strip()
+    else:
+        first_name = client_name.split()[0] if client_name else "there"
+
+    # Replace generic "Driver of Vehicle #1 / #2" with the actual party names
+    description = accident_description
+    description = re.sub(r"Driver of Vehicle #?1", client_name,   description, flags=re.IGNORECASE)
+    description = re.sub(r"Driver of Vehicle #?2", defendant_name, description, flags=re.IGNORECASE)
 
     subject = "Richards & Law – Your Case & Next Steps"
 
@@ -41,7 +54,7 @@ def compose_client_email(
   <p>
     Thank you for reaching out to <strong>Richards &amp; Law</strong>. We understand that the
     accident you experienced on <strong>{date_of_accident}</strong> has been a difficult time —
-    {accident_description} — and we want you to know that you have our full support.
+    {description} — and we want you to know that you have our full support.
   </p>
 
   <p>
