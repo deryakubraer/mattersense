@@ -137,8 +137,8 @@ if "code" in query_params and not st.session_state.access_token:
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### ⚖️ MatterSense AI")
-    st.markdown("**Automated Case Intake**")
+    st.markdown("<h2 style='margin-bottom:2px;'>⚖️ MatterSense AI</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='margin-top:0; color:#555;'>Speed wins cases. Powered by GenAI.</p>", unsafe_allow_html=True)
     st.divider()
 
     STEP_LABELS = [
@@ -151,7 +151,7 @@ with st.sidebar:
     ]
     for i, label in enumerate(STEP_LABELS, start=1):
         if i < st.session_state.step:
-            st.markdown(f"✅ ~~{label}~~")
+            st.markdown(f"✅ {label}")
         elif i == st.session_state.step:
             st.markdown(f"**▶ {label}**")
         else:
