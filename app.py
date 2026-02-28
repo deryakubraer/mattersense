@@ -1,5 +1,5 @@
 """
-Richards & Law — Automated Case Intake
+MatterSense AI — Automated Case Intake
 Swans Applied AI Hackathon
 """
 
@@ -26,7 +26,7 @@ GMAIL_APP_PASSWORD = st.secrets["GMAIL_APP_PASSWORD"]
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Richards & Law — Case Intake",
+    page_title="MatterSense AI",
     page_icon="⚖️",
     layout="centered",
 )
@@ -137,11 +137,7 @@ if "code" in query_params and not st.session_state.access_token:
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.image(
-        "https://framerusercontent.com/images/WyNMWWZTqmGfCzT7ULicrHbsA.png",
-        width=120,
-    )
-    st.markdown("### ⚖️ Richards & Law")
+    st.markdown("### ⚖️ MatterSense AI")
     st.markdown("**Automated Case Intake**")
     st.divider()
 
@@ -170,7 +166,7 @@ with st.sidebar:
 
 # ── Gate: Require Clio Auth ───────────────────────────────────────────────────
 if not st.session_state.access_token:
-    st.title("⚖️ Richards & Law — Case Intake")
+    st.title("⚖️ MatterSense AI")
     st.markdown("Connect your Clio account to begin processing a new police report.")
     st.markdown(
         f'<a href="{build_auth_url()}" target="_self">'
