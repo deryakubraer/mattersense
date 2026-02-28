@@ -608,6 +608,7 @@ elif st.session_state.step == 6:
         defendant_name       = form_data["defendant_name"],
         date_of_accident     = form_data["date_of_accident"],
         accident_description = form_data["accident_description"],
+        openai_api_key       = OPENAI_API_KEY,
     )
 
     # Display preview (editable)
