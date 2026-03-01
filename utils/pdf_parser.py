@@ -60,8 +60,10 @@ _PLATE_STOPWORDS = {
 }
 
 # Top fraction of the first page that contains the header row
-# (accident date · No. of Vehicles · No. Injured · No. Killed)
-_HEADER_CROP_PCT = 0.15
+# (accident date · No. of Vehicles · No. Injured · No. Killed).
+# 20% gives enough room to survive court filing stamps (e.g. NYSCEF)
+# that can occupy the top 5-8% before the form itself begins.
+_HEADER_CROP_PCT = 0.20
 
 
 def _extract_plate_candidates(text: str) -> list[str]:
@@ -170,8 +172,9 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
     content.append({
         "type": "text",
         "text": (
-            "\n\n--- ZOOMED HEADER CROP (top 15% of page 1) ---\n"
-            "This image shows the accident date boxes and the three adjacent count fields:\n"
+            "\n\n--- ZOOMED HEADER CROP (top 20% of page 1) ---\n"
+            "The very top of this image may contain a court filing stamp (e.g. NYSCEF) — ignore it.\n"
+            "Below the stamp is the form header with the accident date boxes and three adjacent count fields:\n"
             "  [No. of Vehicles] [No. Injured] [No. Killed]\n"
             "Read each value from its own labelled box. Use this for date_of_accident "
             "and number_of_injured.\n---"
