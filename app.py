@@ -190,12 +190,11 @@ if not st.session_state.access_token:
     )
     st.session_state.clio_region = selected_region
 
-    st.markdown(
-        f'<a href="{build_auth_url()}" target="_top">'
-        f'<button style="background:#1a3c5e;color:white;padding:12px 24px;'
-        f'border:none;border-radius:6px;font-size:15px;cursor:pointer;">'
-        f'🔗 Connect to Clio Manage</button></a>',
-        unsafe_allow_html=True,
+    st.link_button(
+        label="🔗 Connect to Clio Manage",
+        url=build_auth_url(),
+        help="This will open the Clio login in a new tab",
+        type="primary" # This gives it a professional blue styling automatically
     )
     st.stop()
 
