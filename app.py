@@ -10,7 +10,7 @@ from datetime import datetime
 import requests
 import streamlit as st
 
-from utils.clio_client import ClioClient
+from utils.clio_client import ClioClient, CLIO_REGIONS
 from utils.email_utils import compose_client_email, get_scheduling_link, send_email
 from utils.pdf_parser import extract_fields_from_pdf
 
@@ -18,11 +18,16 @@ from utils.pdf_parser import extract_fields_from_pdf
 CLIO_CLIENT_ID     = st.secrets["CLIO_CLIENT_ID"]
 CLIO_CLIENT_SECRET = st.secrets["CLIO_CLIENT_SECRET"]
 CLIO_REDIRECT_URI  = st.secrets.get("CLIO_REDIRECT_URI", "http://127.0.0.1:8502")
-CLIO_AUTH_URL      = "https://eu.app.clio.com/oauth/authorize"
-CLIO_TOKEN_URL     = "https://eu.app.clio.com/oauth/token"
 OPENAI_API_KEY     = st.secrets["OPENAI_API_KEY"]
 GMAIL_ADDRESS      = st.secrets["GMAIL_ADDRESS"]
 GMAIL_APP_PASSWORD = st.secrets["GMAIL_APP_PASSWORD"]
+
+REGION_LABELS = {
+    "US": "🇺🇸 United States",
+    "EU": "🇪🇺 Europe",
+    "CA": "🇨🇦 Canada",
+    "AU": "🇦🇺 Australia",
+}
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -48,6 +53,7 @@ st.markdown(
 # ── Session State Init ────────────────────────────────────────────────────────
 DEFAULTS = {
     "access_token": None,
+    "clio_region": "EU",
     "step": 1,
     "pdf_bytes": None,
     "client_email": None,
@@ -72,19 +78,24 @@ for k, v in DEFAULTS.items():
 
 
 # ── OAuth Helpers ─────────────────────────────────────────────────────────────
+def _clio_base() -> str:
+    """Return the Clio base URL for the currently selected region."""
+    return CLIO_REGIONS[st.session_state.clio_region]
+
+
 def build_auth_url() -> str:
     params = {
         "response_type": "code",
         "client_id": CLIO_CLIENT_ID,
         "redirect_uri": CLIO_REDIRECT_URI,
     }
-    return f"{CLIO_AUTH_URL}?{urllib.parse.urlencode(params)}"
+    return f"{_clio_base()}/oauth/authorize?{urllib.parse.urlencode(params)}"
 
 
 def exchange_code(code: str) -> str:
     # Clio requires client credentials in the POST body (not Basic Auth)
     resp = requests.post(
-        CLIO_TOKEN_URL,
+        f"{_clio_base()}/oauth/token",
         data={
             "grant_type":    "authorization_code",
             "code":          code,
@@ -159,7 +170,7 @@ with st.sidebar:
 
     st.divider()
     if st.session_state.access_token:
-        st.success("Clio: Connected")
+        st.success(f"Clio: Connected ({st.session_state.clio_region})")
     else:
         st.warning("Clio: Not connected")
 
@@ -168,6 +179,16 @@ with st.sidebar:
 if not st.session_state.access_token:
     st.title("⚖️ MatterSense AI")
     st.markdown("Connect your Clio account to begin processing a new police report.")
+
+    region_keys = list(REGION_LABELS.keys())
+    selected_region = st.selectbox(
+        "Clio Region",
+        options=region_keys,
+        format_func=lambda k: REGION_LABELS[k],
+        index=region_keys.index(st.session_state.clio_region),
+    )
+    st.session_state.clio_region = selected_region
+
     st.markdown(
         f'<a href="{build_auth_url()}" target="_self">'
         f'<button style="background:#1a3c5e;color:white;padding:12px 24px;'
@@ -177,7 +198,7 @@ if not st.session_state.access_token:
     )
     st.stop()
 
-clio = ClioClient(st.session_state.access_token)
+clio = ClioClient(st.session_state.access_token, region=st.session_state.clio_region)
 
 # ── Progress Bar ──────────────────────────────────────────────────────────────
 progress = (st.session_state.step - 1) / 5

@@ -2,7 +2,13 @@ import json
 import logging
 import requests
 
-BASE_URL = "https://eu.app.clio.com/api/v4"
+# Base URLs per Clio region — used for both OAuth and API calls.
+CLIO_REGIONS: dict[str, str] = {
+    "US": "https://app.clio.com",
+    "EU": "https://eu.app.clio.com",
+    "CA": "https://ca.app.clio.com",
+    "AU": "https://au.app.clio.com",
+}
 
 # Configure a module-level logger — output goes to stderr / Streamlit server logs
 logging.basicConfig(
@@ -14,8 +20,12 @@ log = logging.getLogger("clio_client")
 
 
 class ClioClient:
-    def __init__(self, access_token: str):
+    def __init__(self, access_token: str, region: str = "EU"):
+        if region not in CLIO_REGIONS:
+            raise ValueError(f"Unknown Clio region '{region}'. Valid: {list(CLIO_REGIONS)}")
         self.access_token = access_token
+        self.region = region
+        self.api_base = f"{CLIO_REGIONS[region]}/api/v4"
         self.headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
@@ -32,7 +42,7 @@ class ClioClient:
         json_body: dict | None = None,
     ) -> requests.Response:
         """Make an authenticated Clio API call and log the request + response."""
-        url = path if path.startswith("http") else f"{BASE_URL}/{path}"
+        url = path if path.startswith("http") else f"{self.api_base}/{path}"
         log.debug("→ %s %s  params=%s  body=%s", method.upper(), url, params,
                   json.dumps(json_body, default=str) if json_body else None)
 
