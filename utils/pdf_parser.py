@@ -10,8 +10,10 @@ Your task is to carefully read the FULL document (including all pages) and extra
 
 Pay special attention to:
 - DATES: Look for fields labelled "Date of Accident", "Date/Time", "Crash Date". Return in MM/DD/YYYY format.
-- LICENSE PLATES: Look in the "Vehicle" or "Registration" section for each driver. Copy the plate number
-  EXACTLY as printed. Pay extra attention to letters vs numbers (e.g. O vs 0, I vs 1, S vs 5).
+- LICENSE PLATES: Look in the "Vehicle" or "Registration" section for each driver.
+  If a plate number appears in the REFERENCE VALUES below, use that value — it comes from the PDF's
+  embedded text layer and is character-perfect. Only read the plate from the page image if no
+  reference value is provided. Pay extra attention to letters vs numbers (e.g. O vs 0, I vs 1, S vs 5).
 - DRIVER NAMES: Look in "Driver Information" or "Vehicle Operator" sections. Use the full legal name.
 - NUMBER OF INJURED: This is CRITICAL. Police report forms contain a dedicated field for the total
   number of injured persons — typically labelled "No. Injured" (the words may be on separate lines).
@@ -129,8 +131,11 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
         content.append({
             "type": "text",
             "text": (
-                "\n\n--- REFERENCE VALUES (use ONLY to cross-check license plates and dates; "
-                "do NOT use for No. Injured or any other field) ---\n"
+                "\n\n--- REFERENCE VALUES ---\n"
+                "Plate numbers: PREFER these over what you read from the images — "
+                "they come from the PDF text layer and are character-perfect.\n"
+                "Dates: use to cross-check the date you read from the images.\n"
+                "Do NOT use these values for No. Injured or any other field.\n"
                 + "\n".join(reference_lines)
                 + "\n---"
             ),
