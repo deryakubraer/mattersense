@@ -5,7 +5,7 @@ Swans Applied AI Hackathon
 
 import time
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 import requests
 import streamlit as st
@@ -557,33 +557,72 @@ elif st.session_state.step == 5:
     # Hardcoded retainer template ID (account-level, never changes)
     RETAINER_TEMPLATE_ID = 359702
 
+    # Polling config — how long to wait for Clio to finish document automation
+    _POLL_INTERVAL = 3   # seconds between each check
+    _POLL_TIMEOUT  = 30  # give up after this many seconds
+    _FRESHNESS     = 120 # only accept documents created within this many seconds
+
+    def _fetch_fresh_doc() -> dict | None:
+        """
+        Poll get_documents_for_matter until a document created within the last
+        _FRESHNESS seconds appears, or _POLL_TIMEOUT is exceeded.
+        Returns the document dict on success, None on timeout.
+        """
+        cutoff   = datetime.now(timezone.utc) - timedelta(seconds=_FRESHNESS)
+        deadline = time.monotonic() + _POLL_TIMEOUT
+        while time.monotonic() < deadline:
+            try:
+                docs = clio.get_documents_for_matter(matter["id"])
+                if docs:
+                    latest      = docs[0]   # sorted by created_at desc
+                    created_str = latest.get("created_at", "")
+                    if created_str:
+                        created_at = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                        if created_at > cutoff:
+                            return latest
+            except Exception:
+                pass
+            time.sleep(_POLL_INTERVAL)
+        return None
+
     # ── Generate ──────────────────────────────────────────────────────────────
     if not st.session_state.retainer_generated:
         if st.button("🔄 Generate Retainer Agreement", type="primary", use_container_width=True):
             with st.spinner("Triggering Clio document automation…"):
                 try:
                     clio.generate_document(RETAINER_TEMPLATE_ID, matter["id"])
-                    time.sleep(4)  # Allow Clio time to process
-                    st.session_state.retainer_generated = True
                 except Exception as e:
                     st.error(f"Document generation failed: {e}")
                     st.stop()
+            with st.spinner(f"Waiting for Clio to finish (up to {_POLL_TIMEOUT}s)…"):
+                fresh_doc = _fetch_fresh_doc()
+            st.session_state.retainer_generated = True
+            if fresh_doc:
+                try:
+                    st.session_state.document_bytes    = clio.download_document(fresh_doc["id"])
+                    st.session_state.document_filename = fresh_doc["name"]
+                except Exception as e:
+                    st.warning(f"Document generated but download failed: {e}")
             st.rerun()
 
     if st.session_state.retainer_generated:
         st.success("✅ Retainer agreement generated and stored in Clio.")
 
-        # ── Fetch & cache document bytes ──────────────────────────────────────
+        # ── Retry download if polling timed out ───────────────────────────────
         if not st.session_state.document_bytes:
-            with st.spinner("Downloading document…"):
-                try:
-                    docs = clio.get_documents_for_matter(matter["id"])
-                    if docs:
-                        latest = docs[0]  # already sorted desc by created_at
-                        st.session_state.document_bytes    = clio.download_document(latest["id"])
-                        st.session_state.document_filename = latest["name"]
-                except Exception as e:
-                    st.warning(f"Could not download document for preview: {e}")
+            st.warning("Clio is still processing — the document isn't ready yet.")
+            if st.button("⟳ Check again", use_container_width=True):
+                with st.spinner(f"Waiting for Clio to finish (up to {_POLL_TIMEOUT}s)…"):
+                    fresh_doc = _fetch_fresh_doc()
+                if fresh_doc:
+                    try:
+                        st.session_state.document_bytes    = clio.download_document(fresh_doc["id"])
+                        st.session_state.document_filename = fresh_doc["name"]
+                    except Exception as e:
+                        st.warning(f"Download failed: {e}")
+                else:
+                    st.error("Still not ready. Please wait a moment and try again.")
+                st.rerun()
 
         if st.session_state.document_bytes:
             st.download_button(
