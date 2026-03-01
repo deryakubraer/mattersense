@@ -9,22 +9,28 @@ EXTRACTION_PROMPT = """You are a legal data extraction specialist for police acc
 Your task is to carefully read the FULL document (including all pages) and extract exact values.
 
 You will receive:
-  1. A ZOOMED HEADER CROP — a close-up of the top of page 1 showing the accident date,
-     No. of Vehicles, No. Injured, and No. Killed fields side-by-side. Use this image for
-     date_of_accident and number_of_injured. These three count fields sit next to each other;
-     read each one from its own labelled box — do NOT mix them up.
-  2. FULL PAGE IMAGES — all pages at high resolution for everything else.
-  3. REFERENCE VALUES — character-perfect plate numbers and dates from the PDF text layer.
+  1. A ZOOMED HEADER CROP — top 20% of page 1. Use this for date_of_accident and
+     number_of_injured. The header row contains three adjacent count fields:
+       [No. of Vehicles] [No. Injured] [No. Killed]
+     Read each value from its own labelled box — do NOT mix them up.
+  2. A ZOOMED PLATE ROW CROP — a high-resolution strip of the vehicle registration row.
+     Use this for vehicle_plate values. It shows both vehicles' plate numbers side-by-side.
+  3. FULL PAGE IMAGES — all pages at standard resolution for everything else
+     (names, location, description, etc.).
+  4. REFERENCE VALUES — formatted dates from the PDF text layer for cross-checking.
 
 Pay special attention to:
-- DATES: The accident date is in the header crop (Month / Day / Year boxes). Return MM/DD/YYYY.
-- LICENSE PLATES: Look in the "Vehicle" or "Registration" section for each driver.
-  Read the plate from the page image. Copy it character by character — pay close attention
-  to easily confused pairs: O vs 0, I vs 1, Z vs 2, B vs 8, S vs 5.
-- DRIVER NAMES: Look in "Driver Information" or "Vehicle Operator" sections. Use the full legal name.
-- NUMBER OF INJURED: Read the value from the "No. Injured" box in the HEADER CROP — NOT the
-  "No. of Vehicles" box (which is immediately to its left) and NOT "No. Killed" (to its right).
-  Copy the integer from the "No. Injured" box exactly. If blank, return 0.
+- DATES: Read from the header crop (Month / Day / Year boxes). Return MM/DD/YYYY.
+- LICENSE PLATES: Read from the PLATE ROW CROP — it is zoomed in for maximum clarity.
+  The form uses a monospace typewriter-style font. Critical confusion pairs for this font:
+    • 4 vs T — a typed 4 has a prominent crossbar that looks exactly like a capital T;
+               if you see T at the start or within a plate, it is almost certainly the digit 4
+    • X vs K — can look nearly identical in worn typewriter impressions
+    • O vs 0, I vs 1, Z vs 2, B vs 8, S vs 5
+  Copy the plate character by character from the plate row crop. Do not guess or infer.
+- DRIVER NAMES: Look in "Driver Information" or "Vehicle Operator" sections.
+- NUMBER OF INJURED: Read only from the "No. Injured" box in the HEADER CROP.
+  NOT the "No. of Vehicles" box (immediately to its left), NOT "No. Killed" (to its right).
 
 Return ONLY this JSON object (no markdown, no explanation):
 
@@ -48,7 +54,7 @@ Critical rules:
 - Do NOT guess or infer dates — copy them exactly as written.
 - Do NOT guess or infer plate numbers — copy them exactly character by character.
 - Extract ALL drivers/parties listed in the report.
-- number_of_injured comes from the "No. Injured" box in the header crop, never from reference values.
+- number_of_injured comes from the "No. Injured" box in the header crop only.
 - Return ONLY the raw JSON object.
 """
 
@@ -59,11 +65,19 @@ _PLATE_STOPWORDS = {
     'BICYCLIST', 'PEDESTRIAN', 'OTHER', 'AMENDED',
 }
 
-# Top fraction of the first page that contains the header row
-# (accident date · No. of Vehicles · No. Injured · No. Killed).
-# 20% gives enough room to survive court filing stamps (e.g. NYSCEF)
-# that can occupy the top 5-8% before the form itself begins.
-_HEADER_CROP_PCT = 0.20
+# Top fraction of page 1 containing the report header row
+# (Accident Date · No. of Vehicles · No. Injured · No. Killed).
+# 20% gives headroom for court filing stamps (NYSCEF etc.) at the very top.
+_HEADER_CROP_Y0 = 0.00
+_HEADER_CROP_Y1 = 0.20
+
+# Vertical band containing the vehicle registration / plate number row.
+# On MV-104AN/A forms the plate row sits at roughly 33–36% of the page.
+# 30–40% gives a generous margin for scan/form-variant variation.
+# Rendered at 5× zoom for maximum character-level clarity.
+_PLATE_CROP_Y0   = 0.30
+_PLATE_CROP_Y1   = 0.40
+_PLATE_CROP_ZOOM = 5.0
 
 
 def _extract_plate_candidates(text: str) -> list[str]:
@@ -109,20 +123,17 @@ def pdf_to_base64_images(pdf_bytes: bytes) -> list[str]:
     return images
 
 
-def _header_crop_b64(pdf_bytes: bytes) -> str:
+def _page_crop_b64(pdf_bytes: bytes, y0_pct: float, y1_pct: float, zoom: float) -> str:
     """
-    Return a base64 PNG of the top _HEADER_CROP_PCT of the first page at 2.5× zoom.
-
-    The MV-104AN header row contains (left→right):
-      Accident Date (Month/Day/Year) · No. of Vehicles · No. Injured · No. Killed
-    Isolating this strip gives GPT-4o a large, unambiguous view of these adjacent
-    fields so it cannot confuse 'No. of Vehicles = 1' with 'No. Injured'.
+    Crop a horizontal band from page 1 and return it as a base64 PNG.
+    y0_pct / y1_pct are fractions of the page height (0.0–1.0).
+    zoom is the render scale factor.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc[0]
     rect = page.rect
-    clip = fitz.Rect(0, 0, rect.width, rect.height * _HEADER_CROP_PCT)
-    pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), clip=clip)
+    clip = fitz.Rect(0, rect.height * y0_pct, rect.width, rect.height * y1_pct)
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip)
     doc.close()
     return base64.b64encode(pix.tobytes("png")).decode("utf-8")
 
@@ -133,65 +144,72 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
 
     Content sent to the model (in order):
       1. Extraction prompt (instructions)
-      2. Reference values block (plate candidates + formatted dates from embedded text)
-      3. Labelled header crop — top 15% of page 1, for accident date + injury counts
-      4. Full-page images of all pages — for parties, vehicles, description, etc.
+      2. Reference values (formatted dates from embedded text for cross-checking)
+      3. Zoomed header crop  — top 20% at 2.5×, for date + injury counts
+      4. Zoomed plate crop   — 30–40% at 5×, for vehicle plate numbers
+      5. Full-page images    — all pages at 2.5× for everything else
     """
     client = OpenAI(api_key=api_key)
 
     images = pdf_to_base64_images(pdf_bytes)
 
-    # Pre-parse embedded text → only plates + dates (no raw numbers that could confuse counts)
     embedded_text = pdf_to_text(pdf_bytes)
-    plate_candidates = _extract_plate_candidates(embedded_text)
     date_candidates = _extract_date_candidates(embedded_text)
 
     content = [{"type": "text", "text": EXTRACTION_PROMPT}]
 
-    # Reference values block
-    # Only dates from embedded text — plates are read purely from the image.
-    # Embedded-text OCR on scanned forms is unreliable for plates (character substitutions
-    # like 2→Z, 8→E); sending it as a hint causes the model to blend two wrong readings.
-    reference_lines = []
+    # Reference values: dates only (plates read purely from image)
     if date_candidates:
-        reference_lines.append(f"Dates found in embedded text: {', '.join(date_candidates)}")
-
-    if reference_lines:
         content.append({
             "type": "text",
             "text": (
                 "\n\n--- REFERENCE VALUES ---\n"
                 "Dates: use to cross-check the date you read from the header crop.\n"
-                "Do NOT use these values for No. Injured or any other field.\n"
-                + "\n".join(reference_lines)
-                + "\n---"
+                "Do NOT use for No. Injured or any other field.\n"
+                f"Dates found in embedded text: {', '.join(date_candidates)}\n---"
             ),
         })
 
-    # Header crop — labelled so the model knows exactly what it's looking at
+    # 1 — Header crop (date + injury counts)
     content.append({
         "type": "text",
         "text": (
-            "\n\n--- ZOOMED HEADER CROP (top 20% of page 1) ---\n"
-            "The very top of this image may contain a court filing stamp (e.g. NYSCEF) — ignore it.\n"
-            "Below the stamp is the form header with the accident date boxes and three adjacent count fields:\n"
-            "  [No. of Vehicles] [No. Injured] [No. Killed]\n"
-            "Read each value from its own labelled box. Use this for date_of_accident "
-            "and number_of_injured.\n---"
+            "\n\n--- ZOOMED HEADER CROP (top 20% of page 1, 2.5× zoom) ---\n"
+            "The very top may contain a court filing stamp (e.g. NYSCEF) — ignore it.\n"
+            "Below the stamp: accident date boxes and [No. of Vehicles] [No. Injured] [No. Killed].\n"
+            "Use this image for date_of_accident and number_of_injured.\n---"
         ),
     })
     content.append({
         "type": "image_url",
         "image_url": {
-            "url": f"data:image/png;base64,{_header_crop_b64(pdf_bytes)}",
+            "url": f"data:image/png;base64,{_page_crop_b64(pdf_bytes, _HEADER_CROP_Y0, _HEADER_CROP_Y1, 2.5)}",
             "detail": "high",
         },
     })
 
-    # Full page images (all pages, for complete context)
+    # 2 — Plate row crop (vehicle registration row)
     content.append({
         "type": "text",
-        "text": "\n\n--- FULL PAGE IMAGES (all pages) ---",
+        "text": (
+            "\n\n--- ZOOMED PLATE ROW CROP (30–40% of page 1, 5× zoom) ---\n"
+            "This strip shows the 'Plate Number / State of Reg / Vehicle Year & Make' row "
+            "for both vehicles. Use this image for vehicle_plate values.\n"
+            "The font is monospace typewriter — remember: 4 looks like T, X looks like K.\n---"
+        ),
+    })
+    content.append({
+        "type": "image_url",
+        "image_url": {
+            "url": f"data:image/png;base64,{_page_crop_b64(pdf_bytes, _PLATE_CROP_Y0, _PLATE_CROP_Y1, _PLATE_CROP_ZOOM)}",
+            "detail": "high",
+        },
+    })
+
+    # 3 — Full page images (all pages)
+    content.append({
+        "type": "text",
+        "text": "\n\n--- FULL PAGE IMAGES (all pages, 2.5× zoom) ---",
     })
     for img_b64 in images:
         content.append({
