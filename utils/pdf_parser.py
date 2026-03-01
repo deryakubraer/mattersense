@@ -8,18 +8,24 @@ EXTRACTION_PROMPT = """You are a legal data extraction specialist for police acc
 
 Your task is to carefully read the FULL document (including all pages) and extract exact values.
 
+You will receive:
+  1. A ZOOMED HEADER CROP — a close-up of the top of page 1 showing the accident date,
+     No. of Vehicles, No. Injured, and No. Killed fields side-by-side. Use this image for
+     date_of_accident and number_of_injured. These three count fields sit next to each other;
+     read each one from its own labelled box — do NOT mix them up.
+  2. FULL PAGE IMAGES — all pages at high resolution for everything else.
+  3. REFERENCE VALUES — character-perfect plate numbers and dates from the PDF text layer.
+
 Pay special attention to:
-- DATES: Look for fields labelled "Date of Accident", "Date/Time", "Crash Date". Return in MM/DD/YYYY format.
+- DATES: The accident date is in the header crop (Month / Day / Year boxes). Return MM/DD/YYYY.
 - LICENSE PLATES: Look in the "Vehicle" or "Registration" section for each driver.
-  If a plate number appears in the REFERENCE VALUES below, use that value — it comes from the PDF's
+  If a plate number appears in the REFERENCE VALUES, use that value — it comes from the PDF's
   embedded text layer and is character-perfect. Only read the plate from the page image if no
-  reference value is provided. Pay extra attention to letters vs numbers (e.g. O vs 0, I vs 1, S vs 5).
+  reference value is provided.
 - DRIVER NAMES: Look in "Driver Information" or "Vehicle Operator" sections. Use the full legal name.
-- NUMBER OF INJURED: This is CRITICAL. Police report forms contain a dedicated field for the total
-  number of injured persons — typically labelled "No. Injured" (the words may be on separate lines).
-  Read that field directly from the PAGE IMAGES and copy its value as an integer.
-  Do NOT count individual injury checkboxes or severity codes — use only the summary count field.
-  If the field is blank or absent, return 0.
+- NUMBER OF INJURED: Read the value from the "No. Injured" box in the HEADER CROP — NOT the
+  "No. of Vehicles" box (which is immediately to its left) and NOT "No. Killed" (to its right).
+  Copy the integer from the "No. Injured" box exactly. If blank, return 0.
 
 Return ONLY this JSON object (no markdown, no explanation):
 
@@ -43,7 +49,7 @@ Critical rules:
 - Do NOT guess or infer dates — copy them exactly as written.
 - Do NOT guess or infer plate numbers — copy them exactly character by character.
 - Extract ALL drivers/parties listed in the report.
-- number_of_injured must be an integer read ONLY from the page images, never from reference values.
+- number_of_injured comes from the "No. Injured" box in the header crop, never from reference values.
 - Return ONLY the raw JSON object.
 """
 
@@ -53,6 +59,10 @@ _PLATE_STOPWORDS = {
     'COUPE', 'TRUCK', 'AVENUE', 'STREET', 'PATROL', 'REVIEW',
     'BICYCLIST', 'PEDESTRIAN', 'OTHER', 'AMENDED',
 }
+
+# Top fraction of the first page that contains the header row
+# (accident date · No. of Vehicles · No. Injured · No. Killed)
+_HEADER_CROP_PCT = 0.15
 
 
 def _extract_plate_candidates(text: str) -> list[str]:
@@ -73,7 +83,6 @@ def _extract_plate_candidates(text: str) -> list[str]:
 
 def _extract_date_candidates(text: str) -> list[str]:
     """Pull MM/DD/YYYY date strings from embedded text (plausible years only)."""
-    raw = re.findall(r'\b\d{1,2}/\d{1,2}/(\d{4})\b', text)
     all_dates = re.findall(r'\b\d{1,2}/\d{1,2}/\d{4}\b', text)
     return list(dict.fromkeys(
         d for d in all_dates if 1990 <= int(d.split('/')[-1]) <= 2099
@@ -99,16 +108,33 @@ def pdf_to_base64_images(pdf_bytes: bytes) -> list[str]:
     return images
 
 
+def _header_crop_b64(pdf_bytes: bytes) -> str:
+    """
+    Return a base64 PNG of the top _HEADER_CROP_PCT of the first page at 2.5× zoom.
+
+    The MV-104AN header row contains (left→right):
+      Accident Date (Month/Day/Year) · No. of Vehicles · No. Injured · No. Killed
+    Isolating this strip gives GPT-4o a large, unambiguous view of these adjacent
+    fields so it cannot confuse 'No. of Vehicles = 1' with 'No. Injured'.
+    """
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[0]
+    rect = page.rect
+    clip = fitz.Rect(0, 0, rect.width, rect.height * _HEADER_CROP_PCT)
+    pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), clip=clip)
+    doc.close()
+    return base64.b64encode(pix.tobytes("png")).decode("utf-8")
+
+
 def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
     """
     Extract structured fields from a police report PDF using GPT-4o.
 
-    Strategy:
-    - Page images are the primary (and only) source for ALL fields, including No. Injured.
-    - Embedded text is pre-parsed to extract only plate candidates and formatted dates,
-      which are sent as clean reference values. Raw embedded text is never sent — scanned
-      police reports produce heavily garbled OCR that causes the model to misread count
-      fields (No. Injured, No. Killed) when those garbled labels appear next to stray numbers.
+    Content sent to the model (in order):
+      1. Extraction prompt (instructions)
+      2. Reference values block (plate candidates + formatted dates from embedded text)
+      3. Labelled header crop — top 15% of page 1, for accident date + injury counts
+      4. Full-page images of all pages — for parties, vehicles, description, etc.
     """
     client = OpenAI(api_key=api_key)
 
@@ -121,6 +147,7 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
 
     content = [{"type": "text", "text": EXTRACTION_PROMPT}]
 
+    # Reference values block
     reference_lines = []
     if plate_candidates:
         reference_lines.append(f"Plate numbers found in embedded text: {', '.join(plate_candidates)}")
@@ -134,13 +161,37 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
                 "\n\n--- REFERENCE VALUES ---\n"
                 "Plate numbers: PREFER these over what you read from the images — "
                 "they come from the PDF text layer and are character-perfect.\n"
-                "Dates: use to cross-check the date you read from the images.\n"
+                "Dates: use to cross-check the date you read from the header crop.\n"
                 "Do NOT use these values for No. Injured or any other field.\n"
                 + "\n".join(reference_lines)
                 + "\n---"
             ),
         })
 
+    # Header crop — labelled so the model knows exactly what it's looking at
+    content.append({
+        "type": "text",
+        "text": (
+            "\n\n--- ZOOMED HEADER CROP (top 15% of page 1) ---\n"
+            "This image shows the accident date boxes and the three adjacent count fields:\n"
+            "  [No. of Vehicles] [No. Injured] [No. Killed]\n"
+            "Read each value from its own labelled box. Use this for date_of_accident "
+            "and number_of_injured.\n---"
+        ),
+    })
+    content.append({
+        "type": "image_url",
+        "image_url": {
+            "url": f"data:image/png;base64,{_header_crop_b64(pdf_bytes)}",
+            "detail": "high",
+        },
+    })
+
+    # Full page images (all pages, for complete context)
+    content.append({
+        "type": "text",
+        "text": "\n\n--- FULL PAGE IMAGES (all pages) ---",
+    })
     for img_b64 in images:
         content.append({
             "type": "image_url",
