@@ -19,9 +19,8 @@ You will receive:
 Pay special attention to:
 - DATES: The accident date is in the header crop (Month / Day / Year boxes). Return MM/DD/YYYY.
 - LICENSE PLATES: Look in the "Vehicle" or "Registration" section for each driver.
-  If a plate number appears in the REFERENCE VALUES, use that value — it comes from the PDF's
-  embedded text layer and is character-perfect. Only read the plate from the page image if no
-  reference value is provided.
+  Read the plate from the page image. Copy it character by character — pay close attention
+  to easily confused pairs: O vs 0, I vs 1, Z vs 2, B vs 8, S vs 5.
 - DRIVER NAMES: Look in "Driver Information" or "Vehicle Operator" sections. Use the full legal name.
 - NUMBER OF INJURED: Read the value from the "No. Injured" box in the HEADER CROP — NOT the
   "No. of Vehicles" box (which is immediately to its left) and NOT "No. Killed" (to its right).
@@ -148,9 +147,10 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
     content = [{"type": "text", "text": EXTRACTION_PROMPT}]
 
     # Reference values block
+    # Only dates from embedded text — plates are read purely from the image.
+    # Embedded-text OCR on scanned forms is unreliable for plates (character substitutions
+    # like 2→Z, 8→E); sending it as a hint causes the model to blend two wrong readings.
     reference_lines = []
-    if plate_candidates:
-        reference_lines.append(f"Plate numbers found in embedded text: {', '.join(plate_candidates)}")
     if date_candidates:
         reference_lines.append(f"Dates found in embedded text: {', '.join(date_candidates)}")
 
@@ -159,8 +159,6 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
             "type": "text",
             "text": (
                 "\n\n--- REFERENCE VALUES ---\n"
-                "Plate numbers: PREFER these over what you read from the images — "
-                "they come from the PDF text layer and are character-perfect.\n"
                 "Dates: use to cross-check the date you read from the header crop.\n"
                 "Do NOT use these values for No. Injured or any other field.\n"
                 + "\n".join(reference_lines)
