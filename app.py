@@ -191,7 +191,7 @@ if not st.session_state.access_token:
     st.session_state.clio_region = selected_region
 
     st.markdown(
-        f'<a href="{build_auth_url()}" target="_self">'
+        f'<a href="{build_auth_url()}" target="_top">'
         f'<button style="background:#1a3c5e;color:white;padding:12px 24px;'
         f'border:none;border-radius:6px;font-size:15px;cursor:pointer;">'
         f'🔗 Connect to Clio Manage</button></a>',
