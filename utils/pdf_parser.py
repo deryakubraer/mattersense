@@ -9,11 +9,10 @@ Your task is to carefully read the FULL document (including all pages) and extra
 
 Pay special attention to:
 - DATES: Look for fields labelled "Date of Accident", "Date/Time", "Crash Date". Return in MM/DD/YYYY format.
-- LICENSE PLATES: Look in the "Vehicle" or "Registration" section for each driver. Copy the plate number EXACTLY as printed.
+- LICENSE PLATES: Look in the "Vehicle" or "Registration" section for each driver. Copy the plate number EXACTLY as printed. Pay extra attention to letters vs numbers (e.g. O vs 0, I vs 1, S vs 5) and include any dashes or spaces if present.
 - DRIVER NAMES: Look in "Driver Information" or "Vehicle Operator" sections. Use the full legal name.
-- NUMBER OF INJURED: This is CRITICAL. Police report forms contain a dedicated summary field
-  for the total number of injured persons — it is typically labelled exactly as one of:
-    "Number of Persons Injured", "No. of Persons Injured", "Injured", "Total Injured"
+- NUMBER OF INJURED: This is CRITICAL. Police report forms contain a dedicated field
+  for the total number of injured persons — it is typically labelled exactly as "No. Injured". No and Injured may be on separate lines.
   Read that field directly and copy its value as an integer. That field is the source of truth.
   Do NOT count individual injury checkboxes or severity codes — use only the summary count field.
   If the field is blank or absent, return 0.
@@ -40,7 +39,7 @@ Critical rules:
 - Do NOT guess or infer dates — copy them exactly as written.
 - Do NOT guess or infer plate numbers — copy them exactly character by character.
 - Extract ALL drivers/parties listed in the report.
-- number_of_injured must be an integer. Read it from the form's dedicated summary field only.
+- number_of_injured must be an integer. NEVER use the contents of embedded text for this — the model should read it directly from the PDF page images.
 - Return ONLY the raw JSON object.
 """
 
@@ -85,7 +84,7 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
     if embedded_text:
         content.append({
             "type": "text",
-            "text": f"\n\n--- EMBEDDED TEXT FROM PDF (use this to verify dates and plate numbers) ---\n{embedded_text[:6000]}\n---"
+            "text": f"\n\n--- EMBEDDED TEXT FROM PDF (use this to verify dates and plate numbers, but NEVER for No. Injured) ---\n{embedded_text[:6000]}\n---"
         })
 
     # Attach page images
