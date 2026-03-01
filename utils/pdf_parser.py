@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import fitz  # PyMuPDF
 from openai import OpenAI
 
@@ -9,11 +10,12 @@ Your task is to carefully read the FULL document (including all pages) and extra
 
 Pay special attention to:
 - DATES: Look for fields labelled "Date of Accident", "Date/Time", "Crash Date". Return in MM/DD/YYYY format.
-- LICENSE PLATES: Look in the "Vehicle" or "Registration" section for each driver. Copy the plate number EXACTLY as printed. Pay extra attention to letters vs numbers (e.g. O vs 0, I vs 1, S vs 5) and include any dashes or spaces if present.
+- LICENSE PLATES: Look in the "Vehicle" or "Registration" section for each driver. Copy the plate number
+  EXACTLY as printed. Pay extra attention to letters vs numbers (e.g. O vs 0, I vs 1, S vs 5).
 - DRIVER NAMES: Look in "Driver Information" or "Vehicle Operator" sections. Use the full legal name.
-- NUMBER OF INJURED: This is CRITICAL. Police report forms contain a dedicated field
-  for the total number of injured persons — it is typically labelled exactly as "No. Injured". No and Injured may be on separate lines.
-  Read that field directly and copy its value as an integer. That field is the source of truth.
+- NUMBER OF INJURED: This is CRITICAL. Police report forms contain a dedicated field for the total
+  number of injured persons — typically labelled "No. Injured" (the words may be on separate lines).
+  Read that field directly from the PAGE IMAGES and copy its value as an integer.
   Do NOT count individual injury checkboxes or severity codes — use only the summary count field.
   If the field is blank or absent, return 0.
 
@@ -39,27 +41,57 @@ Critical rules:
 - Do NOT guess or infer dates — copy them exactly as written.
 - Do NOT guess or infer plate numbers — copy them exactly character by character.
 - Extract ALL drivers/parties listed in the report.
-- number_of_injured must be an integer. NEVER use the contents of embedded text for this — the model should read it directly from the PDF page images.
+- number_of_injured must be an integer read ONLY from the page images, never from reference values.
 - Return ONLY the raw JSON object.
 """
 
+# Tokens that look like plates but are common non-plate words
+_PLATE_STOPWORDS = {
+    'MV104AN', '104AN', 'VEHICLE', 'REPORT', 'POLICE', 'SECTOR', 'SEDAN',
+    'COUPE', 'TRUCK', 'AVENUE', 'STREET', 'PATROL', 'REVIEW',
+    'BICYCLIST', 'PEDESTRIAN', 'OTHER', 'AMENDED',
+}
+
+
+def _extract_plate_candidates(text: str) -> list[str]:
+    """
+    Pull tokens from embedded text that look like license plates.
+    Requirements: 5–8 chars, uppercase letters/digits only, ≥2 letters, ≥1 digit.
+    Scanned police reports produce garbled OCR; we only want alphanumeric plate-like tokens.
+    """
+    candidates = re.findall(r'\b[A-Z0-9]{5,8}\b', text)
+    plates = [
+        t for t in candidates
+        if len(re.findall(r'[A-Z]', t)) >= 2
+        and re.search(r'[0-9]', t)
+        and t not in _PLATE_STOPWORDS
+    ]
+    return list(dict.fromkeys(plates))  # deduplicate, preserve order
+
+
+def _extract_date_candidates(text: str) -> list[str]:
+    """Pull MM/DD/YYYY date strings from embedded text (plausible years only)."""
+    raw = re.findall(r'\b\d{1,2}/\d{1,2}/(\d{4})\b', text)
+    all_dates = re.findall(r'\b\d{1,2}/\d{1,2}/\d{4}\b', text)
+    return list(dict.fromkeys(
+        d for d in all_dates if 1990 <= int(d.split('/')[-1]) <= 2099
+    ))
+
 
 def pdf_to_text(pdf_bytes: bytes) -> str:
-    """Extract embedded text from PDF using PyMuPDF (fast, works on text-based PDFs)."""
+    """Extract embedded text from PDF using PyMuPDF."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    pages = []
-    for page in doc:
-        pages.append(page.get_text("text"))
+    pages = [page.get_text("text") for page in doc]
     doc.close()
     return "\n\n".join(pages).strip()
 
 
 def pdf_to_base64_images(pdf_bytes: bytes) -> list[str]:
-    """Convert every PDF page to a high-res base64 PNG (for scanned/image PDFs)."""
+    """Convert every PDF page to a high-res base64 PNG (2.5× zoom for sharper OCR)."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     images = []
     for page in doc:
-        pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))  # 2.5× for sharper OCR
+        pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
         images.append(base64.b64encode(pix.tobytes("png")).decode("utf-8"))
     doc.close()
     return images
@@ -68,26 +100,42 @@ def pdf_to_base64_images(pdf_bytes: bytes) -> list[str]:
 def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
     """
     Extract structured fields from a police report PDF using GPT-4o.
-    Sends both embedded text (if any) AND page images for maximum accuracy.
+
+    Strategy:
+    - Page images are the primary (and only) source for ALL fields, including No. Injured.
+    - Embedded text is pre-parsed to extract only plate candidates and formatted dates,
+      which are sent as clean reference values. Raw embedded text is never sent — scanned
+      police reports produce heavily garbled OCR that causes the model to misread count
+      fields (No. Injured, No. Killed) when those garbled labels appear next to stray numbers.
     """
     client = OpenAI(api_key=api_key)
 
-    # Always send images (works for both scanned and text PDFs)
     images = pdf_to_base64_images(pdf_bytes)
 
-    # Also extract embedded text to give the model a second signal
+    # Pre-parse embedded text → only plates + dates (no raw numbers that could confuse counts)
     embedded_text = pdf_to_text(pdf_bytes)
+    plate_candidates = _extract_plate_candidates(embedded_text)
+    date_candidates = _extract_date_candidates(embedded_text)
 
     content = [{"type": "text", "text": EXTRACTION_PROMPT}]
 
-    # Attach embedded text if available (helps with dates/plates that OCR may misread)
-    if embedded_text:
+    reference_lines = []
+    if plate_candidates:
+        reference_lines.append(f"Plate numbers found in embedded text: {', '.join(plate_candidates)}")
+    if date_candidates:
+        reference_lines.append(f"Dates found in embedded text: {', '.join(date_candidates)}")
+
+    if reference_lines:
         content.append({
             "type": "text",
-            "text": f"\n\n--- EMBEDDED TEXT FROM PDF (use this to verify dates and plate numbers, but NEVER for No. Injured) ---\n{embedded_text[:6000]}\n---"
+            "text": (
+                "\n\n--- REFERENCE VALUES (use ONLY to cross-check license plates and dates; "
+                "do NOT use for No. Injured or any other field) ---\n"
+                + "\n".join(reference_lines)
+                + "\n---"
+            ),
         })
 
-    # Attach page images
     for img_b64 in images:
         content.append({
             "type": "image_url",
@@ -101,7 +149,7 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
         model="gpt-4o",
         messages=[{"role": "user", "content": content}],
         max_tokens=2000,
-        temperature=0,  # deterministic — no hallucination
+        temperature=0,
     )
 
     raw = response.choices[0].message.content.strip()
