@@ -15,9 +15,13 @@ You will receive:
      Read each value from its own labelled box — do NOT mix them up.
   2. A ZOOMED PLATE ROW CROP — a high-resolution strip of the vehicle registration row.
      Use this for vehicle_plate values. It shows both vehicles' plate numbers side-by-side.
-  3. FULL PAGE IMAGES — all pages at standard resolution for everything else
-     (names, location, description, etc.).
-  4. REFERENCE VALUES — formatted dates from the PDF text layer for cross-checking.
+  3. A ZOOMED DRIVER INFO CROP — the driver name / DOB / sex rows at 4× zoom.
+     Use this for driver names (last, first, middle initial) and sex fields.
+  4. A ZOOMED LOCATION CROP — the "Road on which accident occurred" section at 4× zoom.
+     Use this for accident_location only (directional abbreviations are clearer at this zoom).
+  5. FULL PAGE IMAGES — all pages at standard resolution for everything else
+     (description, etc.).
+  6. REFERENCE VALUES — formatted dates from the PDF text layer for cross-checking.
 
 Pay special attention to:
 - DATES: Read from the header crop (Month / Day / Year boxes). Return MM/DD/YYYY.
@@ -28,7 +32,22 @@ Pay special attention to:
     • X vs K — can look nearly identical in worn typewriter impressions
     • O vs 0, I vs 1, Z vs 2, B vs 8, S vs 5
   Copy the plate character by character from the plate row crop. Do not guess or infer.
-- DRIVER NAMES: Look in "Driver Information" or "Vehicle Operator" sections.
+- DRIVER NAMES: Read from the ZOOMED DRIVER INFO CROP for maximum accuracy.
+  CRITICAL: Each vehicle has TWO name fields on the form:
+    1. "Name exactly as it appears on REGISTRATION" — this is the REGISTERED OWNER. IGNORE this.
+    2. "Name exactly as it appears on DRIVER LICENSE" (or "Operator") — this is the DRIVER. USE this.
+  Always extract the DRIVER/OPERATOR name (driver license row), never the registered owner name.
+  If the driver license name field is blank (owner is driving), then use the registration name.
+  Names appear as LAST, FIRST, MIDDLE format. Middle initials are single characters — in
+  typewriter font E and S are easily confused (same horizontal bar structure at small size).
+  Read each letter of the name carefully; do not assume a middle initial based on context.
+- SEX: Read the "Sex" box for each driver (typically a small M/F checkbox or filled box next
+  to the driver's name/date-of-birth row). Return exactly "M" or "F". If not visible, return null.
+- ACCIDENT LOCATION: Read from the ZOOMED LOCATION CROP — "Road on which accident occurred" line.
+  NY police reports use directional abbreviations: N/B (Northbound), S/B (Southbound),
+  E/B (Eastbound), W/B (Westbound). In typewriter font E and S look nearly identical —
+  use the full location context (e.g. Long Island Expressway runs E/W, not N/S) to resolve ambiguity.
+  The four possible values are N/B, S/B, E/B, W/B — never N, S, E, W alone.
 - NUMBER OF INJURED: Read only from the "No. Injured" box in the HEADER CROP.
   NOT the "No. of Vehicles" box (immediately to its left), NOT "No. Killed" (to its right).
 
@@ -37,10 +56,11 @@ Return ONLY this JSON object (no markdown, no explanation):
 {
     "parties": [
         {
-            "name": "Full legal name exactly as printed",
+            "name": "Operator/Driver name (from driver license row, NOT registered owner)",
             "role": "DRIVER 1, DRIVER 2, PEDESTRIAN, etc.",
             "vehicle_plate": "Exact plate number as printed, or null",
-            "vehicle_description": "Year Make Model, or null"
+            "vehicle_description": "Year Make Model, or null",
+            "sex": "M or F exactly as printed in the Sex box, or null"
         }
     ],
     "date_of_accident": "MM/DD/YYYY — copy the exact date from the report",
@@ -78,6 +98,22 @@ _HEADER_CROP_Y1 = 0.20
 _PLATE_CROP_Y0   = 0.30
 _PLATE_CROP_Y1   = 0.40
 _PLATE_CROP_ZOOM = 5.0
+
+# Vertical band containing the driver information rows (name, DOB, sex, insurance).
+# On MV-104AN/A forms the "Driver Name as printed on license" row starts at ~18% of the page.
+# Start at 15% to ensure the top operator-name row is fully captured (not clipped).
+# The registration/owner name row follows immediately below it (~28-32%).
+# Rendered at 4× zoom so middle initials and other small characters are unambiguous.
+_DRIVER_CROP_Y0   = 0.15
+_DRIVER_CROP_Y1   = 0.45
+_DRIVER_CROP_ZOOM = 4.0
+
+# Vertical band containing "Road on which accident occurred" (accident location).
+# On MV-104AN/A forms this line sits at roughly 58–65% of the page.
+# Rendered at 4× zoom so directional abbreviations (E/B, W/B, N/B, S/B) are unambiguous.
+_LOCATION_CROP_Y0   = 0.54
+_LOCATION_CROP_Y1   = 0.67
+_LOCATION_CROP_ZOOM = 4.0
 
 
 def _extract_plate_candidates(text: str) -> list[str]:
@@ -145,9 +181,11 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
     Content sent to the model (in order):
       1. Extraction prompt (instructions)
       2. Reference values (formatted dates from embedded text for cross-checking)
-      3. Zoomed header crop  — top 20% at 2.5×, for date + injury counts
-      4. Zoomed plate crop   — 30–40% at 5×, for vehicle plate numbers
-      5. Full-page images    — all pages at 2.5× for everything else
+      3. Zoomed header crop   — top 20% at 2.5×, for date + injury counts
+      4. Zoomed plate crop    — 30–40% at 5×, for vehicle plate numbers
+      5. Zoomed driver crop   — 20–45% at 4×, for driver names + sex fields
+      6. Zoomed location crop — 54–67% at 4×, for accident location / direction
+      7. Full-page images     — all pages at 2.5× for everything else
     """
     client = OpenAI(api_key=api_key)
 
@@ -206,7 +244,45 @@ def extract_fields_from_pdf(pdf_bytes: bytes, api_key: str) -> dict:
         },
     })
 
-    # 3 — Full page images (all pages)
+    # 3 — Driver info crop (name / DOB / sex rows)
+    content.append({
+        "type": "text",
+        "text": (
+            "\n\n--- ZOOMED DRIVER INFO CROP (20–45% of page 1, 4× zoom) ---\n"
+            "Each vehicle has TWO name rows: (1) Registered Owner and (2) Operator/Driver.\n"
+            "ALWAYS use the OPERATOR/DRIVER name (driver license row) — NOT the registered owner.\n"
+            "If the operator row is blank, fall back to the registered owner name.\n"
+            "Names are in LAST, FIRST, MIDDLE format. Middle initials are single characters —\n"
+            "in typewriter font E and S look nearly identical; read each character carefully.\n---"
+        ),
+    })
+    content.append({
+        "type": "image_url",
+        "image_url": {
+            "url": f"data:image/png;base64,{_page_crop_b64(pdf_bytes, _DRIVER_CROP_Y0, _DRIVER_CROP_Y1, _DRIVER_CROP_ZOOM)}",
+            "detail": "high",
+        },
+    })
+
+    # 4 — Location crop ("Road on which accident occurred" row)
+    content.append({
+        "type": "text",
+        "text": (
+            "\n\n--- ZOOMED LOCATION CROP (54–67% of page 1, 4× zoom) ---\n"
+            "Find the 'Road on which accident occurred' line. Use it for accident_location.\n"
+            "Watch for typewriter E vs S confusion in directional abbreviations:\n"
+            "  E/B = Eastbound, W/B = Westbound, N/B = Northbound, S/B = Southbound.\n---"
+        ),
+    })
+    content.append({
+        "type": "image_url",
+        "image_url": {
+            "url": f"data:image/png;base64,{_page_crop_b64(pdf_bytes, _LOCATION_CROP_Y0, _LOCATION_CROP_Y1, _LOCATION_CROP_ZOOM)}",
+            "detail": "high",
+        },
+    })
+
+    # 6 — Full page images (all pages)
     content.append({
         "type": "text",
         "text": "\n\n--- FULL PAGE IMAGES (all pages, 2.5× zoom) ---",

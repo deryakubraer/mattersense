@@ -70,6 +70,7 @@ DEFAULTS = {
     "clio_updated": False,
     "sol_created": False,
     "retainer_generated": False,
+    "retainer_triggered_at": None,
     "email_sent": False,
 }
 for k, v in DEFAULTS.items():
@@ -200,6 +201,7 @@ if not st.session_state.access_token:
 
 clio = ClioClient(st.session_state.access_token, region=st.session_state.clio_region)
 
+
 # ── Progress Bar ──────────────────────────────────────────────────────────────
 progress = (st.session_state.step - 1) / 5
 st.progress(progress, text=f"Step {st.session_state.step} of 6")
@@ -324,7 +326,9 @@ elif st.session_state.step == 3:
         col1, col2 = st.columns(2)
         with col1:
             client_name   = st.text_input("Client Name *",   value=client_party.get("name", ""))
-            pronoun       = st.selectbox("Client Pronoun *", ["his", "her", "their"])
+            _sex = (client_party.get("sex") or "").strip().upper()
+            _pronoun_default = {"M": 0, "F": 1}.get(_sex, 0)
+            pronoun       = st.selectbox("Client Pronoun *", ["his", "her", "their"], index=_pronoun_default)
             plate_number  = st.text_input("Client Vehicle Plate", value=client_party.get("vehicle_plate") or "")
         with col2:
             defendant_name = st.text_input("Defendant Name *", value=defendant_party.get("name", ""))
@@ -416,22 +420,38 @@ elif st.session_state.step == 4:
         "CustomParagraph":      483155,   # auto-derived: injury vs property-only clause
     }
 
-    # type prefix used in cfv stub IDs → sorted list of CF IDs with that type
-    # (sorted ascending = creation order, matching cfv stub numeric suffix order)
-    CF_BY_PREFIX = {
-        "date":      [483062],
-        "text_area": [483065, 483155],                          # Accident Description, CustomParagraph
-        "text_line": [483068, 483071, 483074, 483080, 483152],  # 4 original + Pronoun2
-        "numeric":   [483077],
-    }
-
     # ── Build payload ─────────────────────────────────────────────────────────
     try:
         accident_dt_iso = datetime.strptime(
             form_data["date_of_accident"], "%m/%d/%Y"
         ).strftime("%Y-%m-%d")
+        accident_dt_obj = datetime.strptime(form_data["date_of_accident"], "%m/%d/%Y")
+        sol_dt_obj      = accident_dt_obj.replace(year=accident_dt_obj.year + 8)
+        sol_date_iso    = sol_dt_obj.strftime("%Y-%m-%d")
     except ValueError:
         accident_dt_iso = form_data["date_of_accident"]  # already ISO
+        sol_date_iso    = None
+
+    # ── Ensure "Statute of Limitations Date" custom field exists ──────────────
+    # The SoL date is specific to each accident — we calculate it fresh from the
+    # accident date and always push it so the retainer template shows the right date.
+    with st.spinner("Ensuring Statute of Limitations Date field exists in Clio…"):
+        cf_list = clio.get_custom_fields("Matter")
+        sol_cf  = next((f for f in cf_list if f["name"] == "Statute of Limitations Date"), None)
+        if sol_cf is None:
+            sol_cf = clio.create_custom_field("Statute of Limitations Date", "Matter", "Date")
+        sol_cf_id = sol_cf["id"]
+
+    # Merge the dynamic SoL CF ID into local lookups (don't mutate module-level dicts)
+    local_cf_ids = {**CF_IDS, "Statute of Limitations Date": sol_cf_id}
+
+    # type prefix → sorted CF IDs (creation order = ascending ID, matching cfv stub order)
+    local_cf_by_prefix = {
+        "date":      sorted([483062, sol_cf_id]),               # Date of Accident + SoL Date
+        "text_area": [483065, 483155],                          # Accident Description, CustomParagraph
+        "text_line": [483068, 483071, 483074, 483080, 483152],  # Defendant, Location, Plate, Pronoun, Pronoun2
+        "numeric":   [483077],
+    }
 
     # Pronoun2: subject form derived from possessive pronoun
     pronoun2 = {"his": "he", "her": "she", "their": "they"}.get(
@@ -453,15 +473,16 @@ elif st.session_state.step == 4:
         )
 
     field_values_map = {
-        "Date of Accident":     accident_dt_iso,
-        "Defendant Name":       form_data["defendant_name"],
-        "Accident Location":    form_data["accident_location"],
-        "Client Vehicle Plate": form_data["plate_number"],
-        "Number of Injured":    int(form_data["num_injured"]),
-        "Pronoun":              form_data["pronoun"],
-        "Accident Description": form_data["accident_description"],
-        "Pronoun2":             pronoun2,
-        "CustomParagraph":      custom_paragraph,
+        "Date of Accident":             accident_dt_iso,
+        "Statute of Limitations Date":  sol_date_iso,
+        "Defendant Name":               form_data["defendant_name"],
+        "Accident Location":            form_data["accident_location"],
+        "Client Vehicle Plate":         form_data["plate_number"],
+        "Number of Injured":            int(form_data["num_injured"]),
+        "Pronoun":                      form_data["pronoun"],
+        "Accident Description":         form_data["accident_description"],
+        "Pronoun2":                     pronoun2,
+        "CustomParagraph":              custom_paragraph,
     }
 
     # ── Resolve existing cfv composite IDs from matter stubs ─────────────────
@@ -485,13 +506,15 @@ elif st.session_state.step == 4:
 
         # cf_id → composite cfv stub id (only for fields that already have a value)
         cfv_id_map: dict = {}
-        for prefix, cf_ids in CF_BY_PREFIX.items():
+        for prefix, cf_ids in local_cf_by_prefix.items():
             for cf_id, composite_id in zip(cf_ids, stubs_by_prefix.get(prefix, [])):
                 cfv_id_map[cf_id] = composite_id
 
     custom_field_values = []
     for name, value in field_values_map.items():
-        cf_id = CF_IDS.get(name)
+        if value is None:
+            continue   # skip fields whose value could not be calculated (e.g. bad date parse)
+        cf_id = local_cf_ids.get(name)
         if cf_id is None:
             continue
         entry = {"custom_field": {"id": cf_id}, "value": value}
@@ -509,7 +532,8 @@ elif st.session_state.step == 4:
                 st.error(f"Failed to update matter: {e}")
                 st.stop()
 
-    st.success("✅ Matter updated in Clio with all case fields.")
+    sol_display = sol_dt_obj.strftime("%B %d, %Y") if sol_date_iso else "—"
+    st.success(f"✅ Matter updated in Clio with all case fields (SoL Date: **{sol_display}**).")
 
     # ── Create SoL Calendar Event ─────────────────────────────────────────────
     if not st.session_state.sol_created:
@@ -552,10 +576,11 @@ elif st.session_state.step == 5:
     st.header("Retainer Agreement")
     st.caption("Generate the retainer agreement using Clio's document automation, then approve to continue.")
 
-    matter = st.session_state.matter
+    matter    = st.session_state.matter
+    form_data = st.session_state.form_data
 
-    # Hardcoded retainer template ID (account-level, never changes)
-    RETAINER_TEMPLATE_ID = 359702
+    # Retainer template ID (account-level, never changes)
+    RETAINER_TEMPLATE_ID = 359903
 
     # Polling config — how long to wait for Clio to finish document automation
     _POLL_INTERVAL = 3   # seconds between each check
@@ -564,11 +589,15 @@ elif st.session_state.step == 5:
 
     def _fetch_fresh_doc() -> dict | None:
         """
-        Poll get_documents_for_matter until a document created within the last
-        _FRESHNESS seconds appears, or _POLL_TIMEOUT is exceeded.
+        Poll get_documents_for_matter until a document created after the
+        retainer was triggered appears, or _POLL_TIMEOUT is exceeded.
         Returns the document dict on success, None on timeout.
         """
-        cutoff   = datetime.now(timezone.utc) - timedelta(seconds=_FRESHNESS)
+        # Use the stored trigger timestamp so "Check again" still finds the doc
+        # even if the user clicks it minutes later.
+        cutoff = st.session_state.get("retainer_triggered_at") or (
+            datetime.now(timezone.utc) - timedelta(seconds=_FRESHNESS)
+        )
         deadline = time.monotonic() + _POLL_TIMEOUT
         while time.monotonic() < deadline:
             try:
@@ -590,6 +619,7 @@ elif st.session_state.step == 5:
         if st.button("🔄 Generate Retainer Agreement", type="primary", use_container_width=True):
             with st.spinner("Triggering Clio document automation…"):
                 try:
+                    st.session_state.retainer_triggered_at = datetime.now(timezone.utc)
                     clio.generate_document(RETAINER_TEMPLATE_ID, matter["id"])
                 except Exception as e:
                     st.error(f"Document generation failed: {e}")
@@ -599,7 +629,8 @@ elif st.session_state.step == 5:
             st.session_state.retainer_generated = True
             if fresh_doc:
                 try:
-                    st.session_state.document_bytes    = clio.download_document(fresh_doc["id"])
+                    raw_bytes = clio.download_document(fresh_doc["id"])
+                    st.session_state.document_bytes    = raw_bytes
                     st.session_state.document_filename = fresh_doc["name"]
                 except Exception as e:
                     st.warning(f"Document generated but download failed: {e}")
@@ -616,7 +647,8 @@ elif st.session_state.step == 5:
                     fresh_doc = _fetch_fresh_doc()
                 if fresh_doc:
                     try:
-                        st.session_state.document_bytes    = clio.download_document(fresh_doc["id"])
+                        raw_bytes = clio.download_document(fresh_doc["id"])
+                        st.session_state.document_bytes    = raw_bytes
                         st.session_state.document_filename = fresh_doc["name"]
                     except Exception as e:
                         st.warning(f"Download failed: {e}")

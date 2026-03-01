@@ -72,7 +72,7 @@ Guidelines:
 - Tell the client that their Retainer Agreement is attached and ask them to review it before the consultation — use **bold** for "Retainer Agreement"
 - End with a short sentence telling them to click the button below to book their {season_label} consultation
 - Do NOT include a booking link or button — that will be added separately
-- Do NOT include a signature — that will be added separately
+- Do NOT include any closing line, sign-off, or signature (no "Take care", "Best", "Sincerely", "Warm regards", "[Your Name]", etc.) — the signature is added separately
 - 3–4 short paragraphs max
 - Return plain text only — no HTML tags, no markdown except **bold**, no subject line"""
 
